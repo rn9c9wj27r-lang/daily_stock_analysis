@@ -1,0 +1,70 @@
+name: Daily Stock Analysis - Cloud Compute & Push
+
+on:
+  schedule:
+    # 每天北京时间早上 06:30 (UTC 前一天 22:30) 自动触发分析
+    # 此时美股已完美收盘，A股前日数据处于静止状态，最适合早盘前看报告
+    - cron: '30 22 * * *'
+  workflow_dispatch: # 支持你在 GitHub 网页端随时手动点击按钮触发测试
+
+permissions:
+  contents: write # 赋予 Action 自动提交分析结果回当前仓库的权限
+
+jobs:
+  analyze_and_deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+
+    - name: Install System Dependencies (For Image/PDF Reports)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wkhtmltopdf xvfb chromium-browser
+        # 预装系统级渲染库，防止 DSA 在生成看板图表或 PDF 时因缺少组件报错
+
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
+
+    - name: Run Market Analysis & Generate Static Files
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        STOCK_LIST: ${{ secrets.STOCK_LIST }}
+        # 额外声明：如果你后续有大模型 API 需要走其他通道，可在此追加变量
+      run: |
+        # 1. 强制创建用于存放静态看板的目录
+        mkdir -p docs/data
+        
+        # 2. 执行 DSA 核心分析 (由于在云端，它会无缝抓取美股和A股的公开数据)
+        python main.py
+        
+        # 3. 兼容性对齐：将 DSA 默认生成的 WebUI 静态数据或报告同步进 docs 目录
+        # (根据 DSA 的源码输出习惯，做自动检测与归档)
+        if [ -f report.html ]; then cp report.html docs/index.html; fi
+        if [ -f output.html ]; then cp output.html docs/index.html; fi
+        if [ -d web/static ]; then cp -r web/static/* docs/; fi
+        if [ -f stock_data.json ]; then cp stock_data.json docs/data/; fi
+
+    - name: Commit & Push Static Board to Repo (方案三落地)
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        
+        git add docs/
+        if git diff --cached --quiet; then
+          echo "今天的行情与板块数据已是最新，无需重复提交。"
+        else
+          git commit -m "chore: 📈 自动更新美股点位与A股资金流向看板 [$(date +'%Y-%m-%d %H:%M:%S')]"
+          git push
+        fi
