@@ -43,65 +43,85 @@ jobs:
       run: |
         mkdir -p docs/data
         
-        # 1. 强行分析
+        # 1. 强行执行项目分析
         python main.py --force-run
         
-        # 2. 尝试标准拷贝
-        if [ -f report.html ]; then cp report.html docs/index.html; fi
-        if [ -f output.html ]; then cp output.html docs/index.html; fi
-        find . -name "*.html" -not -path "*/.github/*" -not -path "*/docs/*" -exec cp {} docs/index.html \; 2>/dev/null || true
-        
-        # 3. 同步数据缓存
+        # 2. 🧱 资产同步
         if [ -d data ]; then cp -r data/* docs/data/ || true; fi
         if [ -d web/static ]; then cp -r web/static/* docs/ || true; fi
         
-        # 4. 🧠【动态渲染器】如果项目没吐出 html，直接读取生成的 json 数据硬核渲染成精美看板
+        # 3. 🧠【全盘雷达与动态拼装渲染器】
         python -c '
-        import os, json
-        json_path = "docs/data/cache/stocks.index.json"
+        import os, json, glob
+        
         html_path = "docs/index.html"
         
-        if not os.path.exists(html_path) or os.path.getsize(html_path) < 100:
-            print("未检测到原生HTML报告，正在启动硬核数据渲染器...")
-            stocks_data = "{}"
-            if os.path.exists(json_path):
-                with open(json_path, "r", encoding="utf-8") as f:
-                    stocks_data = json.dumps(json.load(f), indent=2, ensure_ascii=False)
+        # 策略A：全盘搜刮任何新生成的HTML报告（排除docs自身）
+        found_htmls = []
+        for root, dirs, files in os.walk("."):
+            if "docs" in root or ".github" in root: continue
+            for f in files:
+                if f.endswith(".html"):
+                    found_htmls.append(os.path.join(root, f))
+                    
+        if found_htmls:
+            print(f"雷达发现原生HTML报告: {found_htmls[0]}，正在直接转正...")
+            with open(found_htmls[0], "r", encoding="utf-8") as src, open(html_path, "w", encoding="utf-8") as dst:
+                dst.write(src.read())
+            exit(0)
             
-            html_content = f"""<!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="utf-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>AI 智能看盘仪表盘</title>
-                <style>
-                    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #121214; color: #e1e1e6; padding: 20px; line-height: 1.6; }}
-                    .container {{ max-width: 1000px; margin: 0 auto; }}
-                    header {{ border-bottom: 1px solid #29292e; padding-bottom: 20px; margin-bottom: 30px; }}
-                    h1 {{ color: #04d361; margin: 0 0 10px 0; }}
-                    .card {{ background: #202024; border: 1px solid #29292e; border-radius: 8px; padding: 20px; margin-bottom: 20px; }}
-                    pre {{ background: #121214; padding: 15px; border-radius: 6px; overflow-x: auto; color: #a8a8b3; border: 1px solid #29292e; font-family: "Fira Code", Monaco, monospace; }}
-                    .status {{ display: inline-block; background: #1c352d; color: #04d361; padding: 4px 8px; border-radius: 4px; font-size: 14px; font-weight: bold; }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <header>
-                        <h1>📈 AI 智能看盘控制台</h1>
-                        <p>市场策略：美股自选股诊断 + A股板块主力资金面监测</p>
-                        <div class="status">● 云端数据强制刷新成功</div>
-                    </header>
-                    <div class="card">
-                        <h3>🤖 核心交易核心数据底座 (JSON Live)</h3>
-                        <p>下面是 Vertex AI 和爬虫系统在刚刚 5 分钟内为您全量计算出的最新主力资金流向、板块热度及个股点位核心数据：</p>
-                        <pre><code>{stocks_data}</code></pre>
-                    </div>
+        # 策略B：如果没HTML，深度搜刮项目生成的所有相关JSON数据块
+        print("未发现原生HTML报告，正在全盘搜刮JSON资产...")
+        json_assets = {}
+        for root, dirs, files in os.walk("."):
+            if "docs" in root or ".github" in root or "node_modules" in root: continue
+            for f in files:
+                if f.endswith(".json") and ("stock" in f or "index" in f or "report" in f or "analysis" in f):
+                    path = os.path.join(root, f)
+                    try:
+                        with open(path, "r", encoding="utf-8") as jf:
+                            json_assets[f] = json.load(jf)
+                    except:
+                        pass
+        
+        # 拼装前端展示
+        assets_string = json.dumps(json_assets, indent=2, ensure_ascii=False) if json_assets else "暂未搜刮到有效行情或分析JSON，请检查项目 main.py 是否在周末成功执行输出。"
+        
+        html_content = f"""<!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>AI 智能看盘控制台</title>
+            <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #121214; color: #e1e1e6; padding: 20px; line-height: 1.6; }}
+                .container {{ max-width: 1000px; margin: 0 auto; }}
+                header {{ border-bottom: 1px solid #29292e; padding-bottom: 20px; margin-bottom: 30px; }}
+                h1 {{ color: #04d361; margin: 0 0 10px 0; }}
+                .card {{ background: #202024; border: 1px solid #29292e; border-radius: 8px; padding: 20px; margin-bottom: 20px; }}
+                pre {{ background: #121214; padding: 15px; border-radius: 6px; overflow-x: auto; color: #a8a8b3; border: 1px solid #29292e; font-family: monospace; font-size: 13px; }}
+                .status {{ display: inline-block; background: #1c352d; color: #04d361; padding: 4px 8px; border-radius: 4px; font-size: 14px; font-weight: bold; }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <header>
+                    <h1>📈 AI 智能看盘控制台</h1>
+                    <p>引擎核心：Vertex AI 兼容层自定义路由驱动</p>
+                    <div class="status">● 云端计算资产全量捕获成功</div>
+                </header>
+                <div class="card">
+                    <h3>🤖 自动化抓取到的行情与分析数据源汇总</h3>
+                    <p>以下为雷达从系统运行环境中强制剥离出的实时数据底座：</p>
+                    <pre><code>{assets_string}</code></pre>
                 </div>
-            </body>
-            </html>"""
-            with open(html_path, "w", encoding="utf-8") as f:
-                f.write(html_content)
-            print("精美暗黑数据看板渲染成功！")
+            </div>
+        </body>
+        </html>"""
+        
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
+        print("全自动化资产看板生成完毕！")
         '
 
     - name: Commit & Push Static Board to Repo
@@ -111,8 +131,8 @@ jobs:
         
         git add docs/
         if git diff --cached --quiet; then
-          echo "无变动。"
+          echo "无数据变动。"
         else
-          git commit -m "chore: 📈 强制更新智能看盘看板数据与渲染首页 [$(date +'%Y-%m-%d %H:%M:%S')]"
+          git commit -m "chore: 📈 雷达搜刮并强制更新看板 [$(date +'%Y-%m-%d %H:%M:%S')]"
           git push origin main
         fi
