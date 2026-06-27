@@ -51,7 +51,7 @@ jobs:
         mkdir -p docs/data
         
         # 2. 执行 DSA 核心分析
-        python main.py
+        python main.py --force-run      
         
         # 3. 兼容性对齐：将项目可能生成的静态报告自动归档至 docs 目录
         if [ -f report.html ]; then cp report.html docs/index.html; fi
