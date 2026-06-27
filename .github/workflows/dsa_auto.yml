@@ -2,13 +2,12 @@ name: Daily Stock Analysis - Cloud Compute & Push
 
 on:
   schedule:
-    # 每天北京时间早上 06:30 (UTC 前一天 22:30) 自动触发分析
-    # 此时美股已完美收盘，A股前日数据处于静止状态，最适合早盘前看报告
+    # 每天北京时间早上 06:30 (UTC 22:30) 自动触发
     - cron: '30 22 * * *'
-  workflow_dispatch: # 支持你在 GitHub 网页端随时手动点击按钮触发测试
+  workflow_dispatch: # 支持手动点击触发
 
 permissions:
-  contents: write # 赋予 Action 自动提交分析结果回当前仓库的权限
+  contents: write # 💡 核心权限：强制开启虚拟机向仓库提交代码的写权限
 
 jobs:
   analyze_and_deploy:
@@ -26,11 +25,10 @@ jobs:
         python-version: '3.10'
         cache: 'pip'
 
-    - name: Install System Dependencies (For Image/PDF Reports)
+    - name: Install System Dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y wkhtmltopdf xvfb chromium-browser
-        # 预装系统级渲染库，防止 DSA 在生成看板图表时因缺少组件报错
 
     - name: Install Python Dependencies
       run: |
@@ -39,35 +37,46 @@ jobs:
 
     - name: Run Market Analysis & Generate Static Files
       env:
-        # 🔗 核心映射：GitHub 读取你的 Secrets，并精准翻译成项目代码认识的标准变量名
         OPENAI_API_KEY: ${{ secrets.VERTEX_API_KEY }}
         GEMINI_API_KEY: ${{ secrets.VERTEX_API_KEY }}
         BASE_URL: ${{ secrets.VERTEX_API_BASE }}
-        
-        # 📈 股票池配置
         STOCK_LIST: ${{ secrets.STOCK_LIST }}
       run: |
-        # 1. 强制创建用于存放静态看板的目录
+        # 1. 确保 docs 目录存在
         mkdir -p docs/data
         
-        # 2. 执行 DSA 核心分析
-        python main.py --force-run      
+        # 2. 强行刷新（无视周末闭市限制）
+        python main.py --force-run
         
-        # 3. 兼容性对齐：将项目可能生成的静态报告自动归档至 docs 目录
+        # 3. 🔍【路径雷达】搜刮所有生成的 HTML 看板，并强制对齐为 GitHub Pages 首页
+        echo "=== 正在自动搜寻并对齐看板首页 ==="
+        
+        # 尝试标准根目录文件
         if [ -f report.html ]; then cp report.html docs/index.html; fi
         if [ -f output.html ]; then cp output.html docs/index.html; fi
-        if [ -d web/static ]; then cp -r web/static/* docs/; fi
-        if [ -f stock_data.json ]; then cp stock_data.json docs/data/; fi
+        
+        # 深度检索：如果项目把 HTML 生成在任何子目录下，通通捞出来转正
+        find . -name "*.html" -not -path "*/.github/*" -not -path "*/docs/*" -exec cp {} docs/index.html \;
+        
+        # 同步备份数据资产
+        if [ -d data ]; then cp -r data/* docs/data/ || true; fi
+        if [ -d web/static ]; then cp -r web/static/* docs/ || true; fi
+        
+        # 4. 🚀 兜底防 404 机制
+        if [ ! -f docs/index.html ]; then
+          echo "<h1>AI 看盘看板已在云端就绪</h1><p>数据已于周末强制刷新，请检查子目录或稍后刷新。</p>" > docs/index.html
+        fi
+        echo "=== 搜寻与对齐工作完成 ==="
 
-    - name: Commit & Push Static Board to Repo (方案三落地)
+    - name: Commit & Push Static Board to Repo
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         
         git add docs/
         if git diff --cached --quiet; then
-          echo "今天的行情与板块数据已是最新，无需重复提交。"
+          echo "数据已是最新，无变动。"
         else
-          git commit -m "chore: 📈 自动更新美股点位与A股资金流向看板 [$(date +'%Y-%m-%d %H:%M:%S')]"
-          git push
+          git commit -m "chore: 📈 智能看盘数据全量强制更新 [$(date +'%Y-%m-%d %H:%M:%S')]"
+          git push origin main
         fi
