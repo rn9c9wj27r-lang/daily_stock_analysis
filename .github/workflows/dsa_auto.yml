@@ -30,7 +30,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y wkhtmltopdf xvfb chromium-browser
-        # 预装系统级渲染库，防止 DSA 在生成看板图表或 PDF 时因缺少组件报错
+        # 预装系统级渲染库，防止 DSA 在生成看板图表时因缺少组件报错
 
     - name: Install Python Dependencies
       run: |
@@ -39,18 +39,21 @@ jobs:
 
     - name: Run Market Analysis & Generate Static Files
       env:
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        # 🔗 核心映射：GitHub 读取你的 Secrets，并精准翻译成项目代码认识的标准变量名
+        OPENAI_API_KEY: ${{ secrets.VERTEX_API_KEY }}
+        GEMINI_API_KEY: ${{ secrets.VERTEX_API_KEY }}
+        BASE_URL: ${{ secrets.VERTEX_API_BASE }}
+        
+        # 📈 股票池配置
         STOCK_LIST: ${{ secrets.STOCK_LIST }}
-        # 额外声明：如果你后续有大模型 API 需要走其他通道，可在此追加变量
       run: |
         # 1. 强制创建用于存放静态看板的目录
         mkdir -p docs/data
         
-        # 2. 执行 DSA 核心分析 (由于在云端，它会无缝抓取美股和A股的公开数据)
+        # 2. 执行 DSA 核心分析
         python main.py
         
-        # 3. 兼容性对齐：将 DSA 默认生成的 WebUI 静态数据或报告同步进 docs 目录
-        # (根据 DSA 的源码输出习惯，做自动检测与归档)
+        # 3. 兼容性对齐：将项目可能生成的静态报告自动归档至 docs 目录
         if [ -f report.html ]; then cp report.html docs/index.html; fi
         if [ -f output.html ]; then cp output.html docs/index.html; fi
         if [ -d web/static ]; then cp -r web/static/* docs/; fi
