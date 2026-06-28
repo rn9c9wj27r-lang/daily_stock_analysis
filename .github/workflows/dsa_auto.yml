@@ -5,13 +5,13 @@ on:
   workflow_dispatch:
 concurrency:
   group: dsa-workflow-group
-  cancel-in-progress: false          # 改：避免中断正在进行的部署
+  cancel-in-progress: false
 permissions:
   contents: write
   actions: read
 env:
   STOCK_LIST: ${{ secrets.STOCK_LIST }}
-  LLM_MODEL: "gemini-3.1-flash-lite" 
+  LLM_MODEL: "gemini-2.5-flash-lite"
   NODE_VERSION: '20'
   PYTHON_VERSION: '3.11'
 jobs:
@@ -35,7 +35,7 @@ jobs:
       with:
         node-version: ${{ env.NODE_VERSION }}
         cache: 'npm'
-        cache-dependency-path: 'apps/dsa-web/package-lock.json'
+        cache-dependency-path: 'apps/dsa-web/renderer/package-lock.json'
 
     - name: Install System Dependencies
       run: |
@@ -48,23 +48,26 @@ jobs:
         python -m pip install --upgrade pip setuptools wheel
         if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
 
-    - name: Build Frontend
-      # 改：移除 continue-on-error，构建失败立即终止，不部署残缺产物
+    - name: Build Frontend (Vite 编译)
+      env:
+        VITE_BASE_URL: '/daily_stock_analysis/'
       run: |
         set -e
-        if [ ! -f "apps/dsa-web/package.json" ]; then
-          echo "::error::未在 apps/dsa-web 下发现前端项目"
+        cd apps/dsa-web/renderer
+        if [ -f package-lock.json ]; then
+          npm ci --prefer-offline --no-audit
+        else
+          echo "::warning::renderer/package-lock.json 不存在，回退到 npm install"
+          npm install --no-audit
+        fi
+        npm run build
+        if [ ! -d "dist" ]; then
+          echo "::error::Vite 构建失败：未生成 dist"
           exit 1
         fi
-        echo "📦 构建 React 静态资源..."
-        cd apps/dsa-web
-        npm ci --prefer-offline --no-audit
-        # 通过 --base CLI 直接传入，确保 /assets/ 前缀正确
-        # （环境变量 VITE_BASE_URL 单独不生效，Vite 不会自动读取它作为 base）
-        npx vite build --base /daily_stock_analysis/
         cd ../..
 
-    - name: Run Market Analysis
+    - name: Run Market Analysis (数据底座计算)
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -77,19 +80,16 @@ jobs:
     - name: Prepare Deployment Artifacts
       run: |
         set -e
-        mkdir -p docs/data              # 改：显式创建，不再依赖前序步骤的副作用
-        # 迁移行情数据
+        rm -rf docs
+        mkdir -p docs/data
         if [ -d "data" ] && [ -n "$(ls -A data 2>/dev/null)" ]; then
           cp -r data/* docs/data/
-        else
-          echo "::warning::data/ 目录为空或不存在"
         fi
-        # 迁移 Vite 编译产物
-        if [ -d "apps/dsa-web/dist" ]; then
-          echo "✅ 迁移 Vite 构建产物至 docs/"
-          cp -r apps/dsa-web/dist/* docs/
+        if [ -d "apps/dsa-web/renderer/dist" ]; then
+          echo "✅ 迁移 Vite 构建产物到 docs/"
+          cp -r apps/dsa-web/renderer/dist/* docs/
         else
-          echo "::error::未发现 apps/dsa-web/dist，前端构建失败"
+          echo "::error::未发现 apps/dsa-web/renderer/dist"
           exit 1
         fi
 
@@ -100,10 +100,10 @@ jobs:
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
-        git add docs/ 2>/dev/null || true
+        git add docs/
         if git diff --cached --quiet; then
-          echo "✅ 无变动，跳过推送"
+          echo "✅ 无变动，跳过推送。"
         else
-          git commit -m "chore: 📈 自动化看盘编译 - K线数据就绪 [$(date +'%Y-%m-%d %H:%M:%S')]"
+          git commit -m "chore: 📈 静态看盘部署 - $(date +'%Y-%m-%d %H:%M:%S')"
           git push origin main
         fi
