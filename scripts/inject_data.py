@@ -69,7 +69,7 @@ class DataInjector:
             return True
 
         # 优先使用 Vite 构建产物
-        dist_html = Path("apps/dsa-web/renderer/dist/index.html")
+        dist_html = Path("apps/dsa-web/dist/index.html")
         if dist_html.exists():
             self.docs_root.mkdir(parents=True, exist_ok=True)
             self.html_file.write_text(
