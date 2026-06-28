@@ -41,7 +41,7 @@ jobs:
       with:
         node-version: ${{ env.NODE_VERSION }}
         cache: 'npm'
-        cache-dependency-path: 'apps/dsa-web/package-lock.json' # 锁定高精确缓存路径
+        cache-dependency-path: 'apps/dsa-web/package-lock.json'
 
     - name: Install System Dependencies
       run: |
@@ -57,6 +57,8 @@ jobs:
     - name: Build Frontend (Vite 专精编译)
       id: build_frontend
       continue-on-error: true
+      env:
+        VITE_BASE_URL: '/daily_stock_analysis/' # 🔑 注入更强 AI 提到的 Base 路径，根治 404 核心顽疾
       run: |
         set -e
         if [ -f "apps/dsa-web/package.json" ]; then
@@ -84,10 +86,13 @@ jobs:
     - name: Prepare Deployment Artifacts (编译产物清洗与转正)
       run: |
         set -e
-        # 1. 迁移计算出的行情底座 JSON 到 Pages 目录
+        # 1. 创建发布专属的 docs 根目录
+        mkdir -p docs
+        
+        # 2. 迁移计算出的行情底座 JSON 到 Pages 目录
         if [ -d "data" ]; then cp -r data/* docs/data/ 2>/dev/null || true; fi
         
-        # 2. 🧲 精准收刮 Vite 编译出来的 dist 静态产物，转移至 Pages 的 docs/ 根目录
+        # 3. 完美收刮 Vite 编译出来的 dist 静态产物，转移至 Pages 的 docs/ 根目录
         if [ -d "apps/dsa-web/dist" ]; then
           echo "✅ 成功捕获 Vite 编译构建产物，正在转正至 docs/"
           cp -r apps/dsa-web/dist/* docs/
