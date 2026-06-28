@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+"""
+将美股/A股 JSON 资产注入 docs/index.html，实现零后端依赖的纯静态看盘。
+"""
 import json
 import glob
 from pathlib import Path
@@ -21,15 +25,14 @@ class DataInjector:
 
         blacklist_names = {
             "package.json", "package-lock.json", "tsconfig.json",
-            "vite.config.json", "vitest.config.json", "webpack.json",
-            "babel.config.json", ".eslintrc.json", "docker.json",
-            "settings.json",
+            "tsconfig.node.json", "vite.config.json",
+            "vitest.config.json", ".eslintrc.json", "settings.json",
         }
 
         for data_dir in self.data_dirs:
             if not data_dir.exists():
                 continue
-            print(f"📁 扫描数据目录: {data_dir}")
+            print(f"📁 扫描: {data_dir}")
             for json_file in data_dir.rglob("*.json"):
                 resolved = str(json_file.resolve())
                 if resolved in scanned_paths:
@@ -62,41 +65,43 @@ class DataInjector:
         return combined_data
 
     def _prepare_html(self) -> bool:
-        """确保 docs/index.html 存在，优先用 Vite 构建产物"""
         if self.html_file.exists():
             return True
-        # 优先用构建产物
-        dist_html = Path("apps/dsa-web/dist/index.html")
+
+        # 优先使用 Vite 构建产物
+        dist_html = Path("apps/dsa-web/renderer/dist/index.html")
         if dist_html.exists():
             self.docs_root.mkdir(parents=True, exist_ok=True)
             self.html_file.write_text(
                 dist_html.read_text(encoding="utf-8"), encoding="utf-8"
             )
-            print(f"   ✅ 使用构建产物 {dist_html} 作为部署主页")
+            print(f"   ✅ 使用构建产物 {dist_html}")
             return True
-        # 兜底检索（排除 node_modules / dist / docs / .github）
-        print(f"⚠️ docs/index.html 不存在，全局检索源码模板...")
+
+        print(f"⚠️ {self.html_file} 不存在，全局检索模板...")
         for fh in glob.glob("**/index.html", recursive=True):
-            if any(seg in fh for seg in ("node_modules", "dist", "docs", ".github")):
+            if any(seg in fh for seg in ("node_modules", ".github", "dist")):
                 continue
             self.docs_root.mkdir(parents=True, exist_ok=True)
             self.html_file.write_text(
                 Path(fh).read_text(encoding="utf-8"), encoding="utf-8"
             )
-            print(f"   ⚠️ 使用源码模板 {fh}（注意：可能未经过 Vite 编译）")
+            print(f"   ⚠️ 使用源码模板 {fh}（可能未经 Vite 编译）")
             return True
-        print("❌ 未发现任何可用 index.html 模板")
+
+        print("❌ 未发现可用的 index.html 模板")
         return False
 
     def inject_into_html(self, data: Dict[str, Any]) -> bool:
         if not self._prepare_html():
             return False
+
         content = self.html_file.read_text(encoding="utf-8")
         if "window.__INITIAL_DATA__" in content:
             print("ℹ️ 已注入过数据，跳过")
             return True
 
-        # 关键：转义 </script>，防止数据中含 HTML 闭合标签导致页面崩溃
+        # 关键：转义 </script>，避免数据中的 HTML 闭合标签破坏页面
         data_json = json.dumps(data, ensure_ascii=False, indent=2).replace("</", "<\\/")
 
         injection_script = f"""<script>
