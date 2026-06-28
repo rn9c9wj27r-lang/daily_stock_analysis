@@ -35,7 +35,7 @@ jobs:
       with:
         node-version: ${{ env.NODE_VERSION }}
         cache: 'npm'
-        cache-dependency-path: 'apps/dsa-web/renderer/package-lock.json'
+        cache-dependency-path: 'apps/dsa-web/package-lock.json'
 
     - name: Install System Dependencies
       run: |
@@ -48,18 +48,13 @@ jobs:
         python -m pip install --upgrade pip setuptools wheel
         if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
 
-    - name: Build Frontend (Vite 编译)
+    - name: Build Frontend (Vite 生产级编译)
       env:
         VITE_BASE_URL: '/daily_stock_analysis/'
       run: |
         set -e
-        cd apps/dsa-web/renderer
-        if [ -f package-lock.json ]; then
-          npm ci --prefer-offline --no-audit
-        else
-          echo "::warning::renderer/package-lock.json 不存在，回退到 npm install"
-          npm install --no-audit
-        fi
+        cd apps/dsa-web
+        npm ci --prefer-offline --no-audit
         npm run build
         if [ ! -d "dist" ]; then
           echo "::error::Vite 构建失败：未生成 dist"
@@ -75,7 +70,7 @@ jobs:
       run: |
         set -e
         mkdir -p docs/data/cache
-        python main.py --force-run
+        python main.py
 
     - name: Prepare Deployment Artifacts
       run: |
@@ -85,11 +80,11 @@ jobs:
         if [ -d "data" ] && [ -n "$(ls -A data 2>/dev/null)" ]; then
           cp -r data/* docs/data/
         fi
-        if [ -d "apps/dsa-web/renderer/dist" ]; then
+        if [ -d "apps/dsa-web/dist" ]; then
           echo "✅ 迁移 Vite 构建产物到 docs/"
-          cp -r apps/dsa-web/renderer/dist/* docs/
+          cp -r apps/dsa-web/dist/* docs/
         else
-          echo "::error::未发现 apps/dsa-web/renderer/dist"
+          echo "::error::未发现 apps/dsa-web/dist"
           exit 1
         fi
 
