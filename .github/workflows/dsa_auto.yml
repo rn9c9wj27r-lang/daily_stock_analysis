@@ -2,7 +2,6 @@ name: Daily Stock Analysis - Cloud Compute & Push
 
 on:
   schedule:
-    # 🕒 自动化定时：每天北京时间早上 06:30 (UTC 22:30) 自动触发
     - cron: '30 22 * * *'
   workflow_dispatch:
 
@@ -42,6 +41,7 @@ jobs:
       with:
         node-version: ${{ env.NODE_VERSION }}
         cache: 'npm'
+        cache-dependency-path: 'apps/dsa-web/package-lock.json' # 锁定高精确缓存路径
 
     - name: Install System Dependencies
       run: |
@@ -49,41 +49,29 @@ jobs:
         sudo apt-get install -y --no-install-recommends wkhtmltopdf xvfb chromium-browser
         sudo apt-get clean && sudo rm -rf /var/lib/apt/lists/*
 
-    - name: Install Python Dependencies (按优先级环境隔离)
+    - name: Install Python Dependencies
       run: |
         python -m pip install --upgrade pip setuptools wheel
-        if [ -f requirements.lock.txt ]; then
-          echo "📌 发现锁定版本依赖（requirements.lock.txt）"
-          pip install --no-cache-dir -r requirements.lock.txt
-        elif [ -f requirements.txt ]; then
-          echo "📦 发现标准依赖文件（requirements.txt）"
-          pip install --no-cache-dir -r requirements.txt
-        else
-          echo "⚠️ 未找到任何 Python 依赖文件，跳过安装"
-        fi
+        if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
 
-    - name: Build Frontend (编译前端 K 线组件与资金面板)
+    - name: Build Frontend (Vite 专精编译)
       id: build_frontend
       continue-on-error: true
       run: |
         set -e
-        BUILD_SUCCESS=false
-        if [ -f "package.json" ]; then
-          echo "📦 检测到根目录 package.json，开始构建..."
+        if [ -f "apps/dsa-web/package.json" ]; then
+          echo "📦 进入 apps/dsa-web 开始构建生产级 React 静态资源..."
+          cd apps/dsa-web
           npm ci --prefer-offline --no-audit
-          npm run build && BUILD_SUCCESS=true
-        elif [ -f "web/package.json" ]; then
-          echo "📦 检测到 web/ 目录 package.json，开始构建..."
-          cd web && npm ci --prefer-offline --no-audit
-          npm run build && BUILD_SUCCESS=true
-          cd ..
+          npm run build
+          cd ../..
+          echo "BUILD_SUCCESS=true" >> "$GITHUB_ENV"
         else
-          echo "⚠️ 未找到 package.json，跳过前端编译"
+          echo "❌ 错误：未在 apps/dsa-web 下发现前端项目！"
+          exit 1
         fi
-        echo "BUILD_SUCCESS=$BUILD_SUCCESS" >> "$GITHUB_ENV"
 
-    - name: Run Market Analysis (执行底层数据抓取与大模型诊断)
-      id: market_analysis
+    - name: Run Market Analysis (数据底座离线计算)
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -91,45 +79,23 @@ jobs:
       run: |
         set -e
         mkdir -p docs/data/cache
-        echo "🚀 启动股票市场分析引擎..."
-        
-        if ! python main.py --force-run; then
-          echo "⚠️ 核心分析脚本返回非零状态，启动自愈链路检查..."
-          if [ -f "data/cache/stocks.json" ] || [ -f "docs/data/cache/stocks.json" ] || [ -n "$(ls -A docs/data/cache/ 2>/dev/null)" ]; then
-            echo "✅ [降级路径] 检测到历史有效行情缓存，继续执行页面渲染流程"
-            exit 0
-          else
-            echo "❌ [绝望路径] 既无新生成数据，也无本地历史缓存，流程强行中止"
-            exit 1
-          fi
-        fi
-        echo "✅ [最优路径] 数据全量刷新分析完成！"
+        python main.py --force-run
 
-    - name: Prepare Deployment Artifacts (智能产物收刮与验证)
+    - name: Prepare Deployment Artifacts (编译产物清洗与转正)
       run: |
         set -e
-        echo "🔍 开始合并分析资产..."
+        # 1. 迁移计算出的行情底座 JSON 到 Pages 目录
         if [ -d "data" ]; then cp -r data/* docs/data/ 2>/dev/null || true; fi
         
-        echo "🔍 验证并转正前端构建产物..."
-        ARTIFACT_FOUND=false
-        for dir in dist build web/dist web/build web/static; do
-          if [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
-            echo "✅ 成功捕获静态构建产物: $dir"
-            cp -r "$dir"/* docs/ 2>/dev/null || true
-            ARTIFACT_FOUND=true
-          fi
-        done
-        
-        if [ "$ARTIFACT_FOUND" = false ] && [ "$BUILD_SUCCESS" = "true" ]; then
-          echo "⚠️ 前端构建脚本标记成功，但未发现物理产物文件夹，采取降级防灾机制"
+        # 2. 🧲 精准收刮 Vite 编译出来的 dist 静态产物，转移至 Pages 的 docs/ 根目录
+        if [ -d "apps/dsa-web/dist" ]; then
+          echo "✅ 成功捕获 Vite 编译构建产物，正在转正至 docs/"
+          cp -r apps/dsa-web/dist/* docs/
+        else
+          echo "⚠️ 警告：未发现 apps/dsa-web/dist 编译产物，检查前端是否报错。"
         fi
-        
-        for script in export_static.py generate_report.py; do
-          if [ -f "$script" ]; then python "$script" || true; fi
-        done
 
-    - name: Inject Stock Data into Static Pages (面向对象高级穿透注入)
+    - name: Inject Stock Data into Static Pages (将行情深度穿透进打包后的 index.html)
       run: python scripts/inject_data.py
 
     - name: Commit & Push Changes
@@ -139,8 +105,8 @@ jobs:
         git add docs/ 2>/dev/null || true
         
         if git diff --cached --quiet; then
-          echo "✅ 今日数据与图表资产无任何变动，跳过推送。"
+          echo "✅ 无变动，跳过推送。"
         else
-          git commit -m "chore: 📈 智能编译看盘系统 - 实时美股K线与A股资金流就绪 [$(date +'%Y-%m-%d %H:%M:%S')]"
-          git push origin main || { echo "❌ 推送失败，可能有并发冲突或网络波动"; exit 1; }
+          git commit -m "chore: 📈 Vite 自动化看盘编译 - 全量美股K线就绪 [$(date +'%Y-%m-%d %H:%M:%S')]"
+          git push origin main
         fi
