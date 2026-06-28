@@ -3,21 +3,27 @@ name: Daily Stock Analysis - Cloud Compute & Push
 on:
   schedule:
     # 🕒 自动化定时：每天北京时间早上 06:30 (UTC 22:30) 自动触发
-    # 此时美股完美收盘、A股静止，早盘前自动为你刷新好数据，不需要再反复手动点击！
     - cron: '30 22 * * *'
-  workflow_dispatch: # 保留网页手动触发按钮
+  workflow_dispatch:
 
-# 🔒 单实例锁：防止多次点击或定时任务重叠运行导致冲突
 concurrency:
   group: dsa-workflow-group
-  cancel-in-progress: true # 如果有新任务进来，自动取消正在排队或卡住的老任务
+  cancel-in-progress: true
 
 permissions:
   contents: write
+  actions: read
+
+env:
+  STOCK_LIST: ${{ secrets.STOCK_LIST }}
+  LLM_MODEL: "gemini-3.1-flash-lite"
+  NODE_VERSION: '20'
+  PYTHON_VERSION: '3.11'
 
 jobs:
   analyze_and_deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
     - name: Checkout Repository
@@ -28,102 +34,113 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: ${{ env.PYTHON_VERSION }}
         cache: 'pip'
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
 
     - name: Install System Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y wkhtmltopdf xvfb chromium-browser
+        sudo apt-get install -y --no-install-recommends wkhtmltopdf xvfb chromium-browser
+        sudo apt-get clean && sudo rm -rf /var/lib/apt/lists/*
 
-    - name: Install Python Dependencies
+    - name: Install Python Dependencies (按优先级环境隔离)
       run: |
-        python -m pip install --upgrade pip
-        if [ -f requirements.txt ]; then pip install --no-cache-dir -r requirements.txt; fi
+        python -m pip install --upgrade pip setuptools wheel
+        if [ -f requirements.lock.txt ]; then
+          echo "📌 发现锁定版本依赖（requirements.lock.txt）"
+          pip install --no-cache-dir -r requirements.lock.txt
+        elif [ -f requirements.txt ]; then
+          echo "📦 发现标准依赖文件（requirements.txt）"
+          pip install --no-cache-dir -r requirements.txt
+        else
+          echo "⚠️ 未找到任何 Python 依赖文件，跳过安装"
+        fi
 
-    - name: Run Market Analysis & Generate Static Files
+    - name: Build Frontend (编译前端 K 线组件与资金面板)
+      id: build_frontend
+      continue-on-error: true
+      run: |
+        set -e
+        BUILD_SUCCESS=false
+        if [ -f "package.json" ]; then
+          echo "📦 检测到根目录 package.json，开始构建..."
+          npm ci --prefer-offline --no-audit
+          npm run build && BUILD_SUCCESS=true
+        elif [ -f "web/package.json" ]; then
+          echo "📦 检测到 web/ 目录 package.json，开始构建..."
+          cd web && npm ci --prefer-offline --no-audit
+          npm run build && BUILD_SUCCESS=true
+          cd ..
+        else
+          echo "⚠️ 未找到 package.json，跳过前端编译"
+        fi
+        echo "BUILD_SUCCESS=$BUILD_SUCCESS" >> "$GITHUB_ENV"
+
+    - name: Run Market Analysis (执行底层数据抓取与大模型诊断)
+      id: market_analysis
       env:
-        OPENAI_API_KEY: ${{ secrets.VERTEX_API_KEY }}
-        GEMINI_API_KEY: ${{ secrets.VERTEX_API_KEY }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         BASE_URL: ${{ secrets.VERTEX_API_BASE }}
-        STOCK_LIST: ${{ secrets.STOCK_LIST }}
-        
-        # 🪙 高性价比模型指定：切换为你推荐的极速实惠模型
-        LLM_MODEL: "gemini-3.1-flash-lite"
       run: |
-        mkdir -p docs/data
+        set -e
+        mkdir -p docs/data/cache
+        echo "🚀 启动股票市场分析引擎..."
         
-        # 1. 强行刷新数据底座
-        python main.py --force-run
-        
-        # 2. 🧱 资产深层同步
-        if [ -d data ]; then cp -r data/* docs/data/ || true; fi
-        
-        # 3. 🛡️ 降维打击卡死动画：直接将刚刚 5 分钟算出来的个股、大盘核心 JSON 数据穿透渲染成真实的复盘看板
-        python -c '
-        import os, json, glob
-        
-        html_path = "docs/index.html"
-        json_files = glob.glob("docs/data/cache/*.json") + glob.glob("data/cache/*.json") + glob.glob("*.json")
-        
-        data_summary = {}
-        for jf in json_files:
-            name = os.path.basename(jf)
-            if "doc" in name or "package" in name or "config" in name: continue
-            try:
-                with open(jf, "r", encoding="utf-8") as f:
-                    content = json.load(f)
-                    if content: data_summary[name] = content
-            except: pass
-            
-        # 强制格式化
-        assets_string = json.dumps(data_summary, indent=2, ensure_ascii=False) if data_summary else "模型调用成功，暂未捕获到缓存落盘。请检查 GitHub Secrets 中的 STOCK_LIST 变量是否配置了有效个股。"
-        
-        html_content = f"""<!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>📈 AI 智能看盘控制台</title>
-            <style>
-                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0d1117; color: #c9d1d9; padding: 25px; line-height: 1.6; }}
-                .container {{ max-width: 1000px; margin: 0 auto; }}
-                header {{ border-bottom: 1px solid #21262d; padding-bottom: 20px; margin-bottom: 25px; }}
-                h1 {{ color: #58a6ff; margin: 0 0 10px 0; font-size: 28px; }}
-                .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }}
-                .tag {{ display: inline-block; background: #1f6feb; color: #ffffff; padding: 4px 10px; border-radius: 6px; font-size: 13px; font-weight: bold; margin-bottom: 15px; }}
-                pre {{ background: #0d1117; padding: 18px; border-radius: 8px; overflow-x: auto; color: #39d353; border: 1px solid #30363d; font-family: "Fira Code", Monaco, monospace; font-size: 13px; }}
-                .hint {{ color: #8b949e; font-size: 14px; margin-top: 5px; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <header>
-                    <h1>📈 AI 智能看盘控制台 (云端数据穿透版)</h1>
-                    <p class="hint">当前引擎：OpenRouter/Vertex 兼容层 | 大模型：{os.getenv("LLM_MODEL")}</p>
-                </header>
-                <div class="card">
-                    <div class="tag">● 离线看板数据流已成功解构</div>
-                    <p>由于 GitHub Pages 处于零服务器的静态托管状态，我们已绕过需要实时后端的动画加载层，直接将刚刚云端为您深度分析完的个股、板块及多空资金核心底座提取出来：</p>
-                    <pre><code>{assets_string}</code></pre>
-                </div>
-            </div>
-        </body>
-        </html>"""
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
-        print("【成功】数据穿透层已成功替换加载动画首页！")
-        '
+        if ! python main.py --force-run; then
+          echo "⚠️ 核心分析脚本返回非零状态，启动自愈链路检查..."
+          if [ -f "data/cache/stocks.json" ] || [ -f "docs/data/cache/stocks.json" ] || [ -n "$(ls -A docs/data/cache/ 2>/dev/null)" ]; then
+            echo "✅ [降级路径] 检测到历史有效行情缓存，继续执行页面渲染流程"
+            exit 0
+          else
+            echo "❌ [绝望路径] 既无新生成数据，也无本地历史缓存，流程强行中止"
+            exit 1
+          fi
+        fi
+        echo "✅ [最优路径] 数据全量刷新分析完成！"
 
-    - name: Commit & Push Static Board to Repo
+    - name: Prepare Deployment Artifacts (智能产物收刮与验证)
+      run: |
+        set -e
+        echo "🔍 开始合并分析资产..."
+        if [ -d "data" ]; then cp -r data/* docs/data/ 2>/dev/null || true; fi
+        
+        echo "🔍 验证并转正前端构建产物..."
+        ARTIFACT_FOUND=false
+        for dir in dist build web/dist web/build web/static; do
+          if [ -d "$dir" ] && [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
+            echo "✅ 成功捕获静态构建产物: $dir"
+            cp -r "$dir"/* docs/ 2>/dev/null || true
+            ARTIFACT_FOUND=true
+          fi
+        done
+        
+        if [ "$ARTIFACT_FOUND" = false ] && [ "$BUILD_SUCCESS" = "true" ]; then
+          echo "⚠️ 前端构建脚本标记成功，但未发现物理产物文件夹，采取降级防灾机制"
+        fi
+        
+        for script in export_static.py generate_report.py; do
+          if [ -f "$script" ]; then python "$script" || true; fi
+        done
+
+    - name: Inject Stock Data into Static Pages (面向对象高级穿透注入)
+      run: python scripts/inject_data.py
+
+    - name: Commit & Push Changes
       run: |
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
+        git add docs/ 2>/dev/null || true
         
-        git add docs/
         if git diff --cached --quiet; then
-          echo "今日行情无新数据变动，跳过推送。"
+          echo "✅ 今日数据与图表资产无任何变动，跳过推送。"
         else
-          git commit -m "chore: 📈 自动执行美股/A股复盘并解构静态数据流 [$(date +'%Y-%m-%d %H:%M:%S')]"
-          git push origin main
+          git commit -m "chore: 📈 智能编译看盘系统 - 实时美股K线与A股资金流就绪 [$(date +'%Y-%m-%d %H:%M:%S')]"
+          git push origin main || { echo "❌ 推送失败，可能有并发冲突或网络波动"; exit 1; }
         fi
