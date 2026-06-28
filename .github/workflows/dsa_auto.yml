@@ -2,8 +2,15 @@ name: Daily Stock Analysis - Cloud Compute & Push
 
 on:
   schedule:
+    # 🕒 自动化定时：每天北京时间早上 06:30 (UTC 22:30) 自动触发
+    # 此时美股完美收盘、A股静止，早盘前自动为你刷新好数据，不需要再反复手动点击！
     - cron: '30 22 * * *'
-  workflow_dispatch:
+  workflow_dispatch: # 保留网页手动触发按钮
+
+# 🔒 单实例锁：防止多次点击或定时任务重叠运行导致冲突
+concurrency:
+  group: dsa-workflow-group
+  cancel-in-progress: true # 如果有新任务进来，自动取消正在排队或卡住的老任务
 
 permissions:
   contents: write
@@ -24,7 +31,7 @@ jobs:
         python-version: '3.10'
         cache: 'pip'
 
-    - name: Install System Dependencies (核心：HTML与图表渲染引擎)
+    - name: Install System Dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y wkhtmltopdf xvfb chromium-browser
@@ -41,70 +48,72 @@ jobs:
         BASE_URL: ${{ secrets.VERTEX_API_BASE }}
         STOCK_LIST: ${{ secrets.STOCK_LIST }}
         
-        # 🤖 核心配置：在这里指定你的自定义路由所支持的具体模型名称
-        # 如果你的中转支持其他模型，可以修改此处，如 gemini-2.5-pro, gpt-4o, claude-3-5-sonnet 等
+        # 🪙 高性价比模型指定：切换为你推荐的极速实惠模型
         LLM_MODEL: "gemini-3.1-flash-lite"
       run: |
-        # 1. 重置并创建干净的 docs 目录
-        rm -rf docs
         mkdir -p docs/data
         
-        # 2. 强行执行核心分析任务，无视交易日限制
+        # 1. 强行刷新数据底座
         python main.py --force-run
         
-        # 3. 🔍 资产捕捉：如果项目自带将缓存转为静态 HTML 报告的脚本，优先调用
-        # (通常项目有类似 generate_report.py 或通过 main 参数直接生成)
-        if [ -f generate_report.py ]; then python generate_report.py || true; fi
+        # 2. 🧱 资产深层同步
+        if [ -d data ]; then cp -r data/* docs/data/ || true; fi
         
-        # 4. 🧲 雷达强力收刮：捕获分析后落盘的任何原生 HTML 报告
-        found_report=false
-        for f in $(find . -maxdepth 3 -name "*.html" -not -path "*/.github/*" -not -path "*/web/*"); do
-          echo "发现生成的行情快照文件: $f"
-          cp "$f" docs/index.html
-          found_report=true
-          break
-        done
-        
-        # 5. 🎛️ 终极降维打击：如果项目在非交易日坚决不吐 HTML，我们直接抓取它刚刚 5 分钟算出来的最新数据 JSON，
-        # 并用 Python 在本地将分析文本渲染成一个精美、立等可取的单文件报告，防止 WebUI 找不到后端卡死。
-        if [ "$found_report" = false ]; then
-          echo "未发现标准 HTML 报告，启动本地数据模板渲染器..."
-          python -c '
+        # 3. 🛡️ 降维打击卡死动画：直接将刚刚 5 分钟算出来的个股、大盘核心 JSON 数据穿透渲染成真实的复盘看板
+        python -c '
         import os, json, glob
-        json_files = glob.glob("data/cache/*.json") + glob.glob("*.json")
+        
+        html_path = "docs/index.html"
+        json_files = glob.glob("docs/data/cache/*.json") + glob.glob("data/cache/*.json") + glob.glob("*.json")
+        
         data_summary = {}
         for jf in json_files:
-            if "doc" in jf or "package" in jf: continue
+            name = os.path.basename(jf)
+            if "doc" in name or "package" in name or "config" in name: continue
             try:
-                with open(jf, "r", encoding="utf-8") as f: data_summary[os.path.basename(jf)] = json.load(f)
+                with open(jf, "r", encoding="utf-8") as f:
+                    content = json.load(f)
+                    if content: data_summary[name] = content
             except: pass
+            
+        # 强制格式化
+        assets_string = json.dumps(data_summary, indent=2, ensure_ascii=False) if data_summary else "模型调用成功，暂未捕获到缓存落盘。请检查 GitHub Secrets 中的 STOCK_LIST 变量是否配置了有效个股。"
         
         html_content = f"""<!DOCTYPE html>
         <html>
         <head>
-            <meta charset="utf-8"><title>AI 智能看盘快照</title>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>📈 AI 智能看盘控制台</title>
             <style>
-                body {{ font-family: -apple-system, sans-serif; background: #121214; color: #e1e1e6; padding: 30px; }}
-                .container {{ max-width: 900px; margin: 0 auto; }}
-                h1 {{ color: #04d361; border-bottom: 1px solid #29292e; padding-bottom: 10px; }}
-                .box {{ background: #202024; border: 1px solid #29292e; padding: 20px; border-radius: 8px; margin-top: 20px; }}
-                pre {{ background: #121214; padding: 15px; border-radius: 6px; overflow-x: auto; color: #04d361; border: 1px solid #29292e; font-family: monospace; }}
+                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0d1117; color: #c9d1d9; padding: 25px; line-height: 1.6; }}
+                .container {{ max-width: 1000px; margin: 0 auto; }}
+                header {{ border-bottom: 1px solid #21262d; padding-bottom: 20px; margin-bottom: 25px; }}
+                h1 {{ color: #58a6ff; margin: 0 0 10px 0; font-size: 28px; }}
+                .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }}
+                .tag {{ display: inline-block; background: #1f6feb; color: #ffffff; padding: 4px 10px; border-radius: 6px; font-size: 13px; font-weight: bold; margin-bottom: 15px; }}
+                pre {{ background: #0d1117; padding: 18px; border-radius: 8px; overflow-x: auto; color: #39d353; border: 1px solid #30363d; font-family: "Fira Code", Monaco, monospace; font-size: 13px; }}
+                .hint {{ color: #8b949e; font-size: 14px; margin-top: 5px; }}
             </style>
         </head>
         <body>
             <div class="container">
-                <h1>📊 每日自选股与大盘资金面复盘快照</h1>
-                <p>底层驱动：Vertex AI (模型: {os.getenv("LLM_MODEL", "默认")}) | 云端计算托管已成功</p>
-                <div class="box">
-                    <h3>🤖 核心计算层输出资产 (Live Data)</h3>
-                    <pre><code>{json.dumps(data_summary, indent=2, ensure_ascii=False) if data_summary else "模型调用已成功，暂未发现本地数据落盘，请检查 STOCK_LIST 变量是否正确传入。"}</code></pre>
+                <header>
+                    <h1>📈 AI 智能看盘控制台 (云端数据穿透版)</h1>
+                    <p class="hint">当前引擎：OpenRouter/Vertex 兼容层 | 大模型：{os.getenv("LLM_MODEL")}</p>
+                </header>
+                <div class="card">
+                    <div class="tag">● 离线看板数据流已成功解构</div>
+                    <p>由于 GitHub Pages 处于零服务器的静态托管状态，我们已绕过需要实时后端的动画加载层，直接将刚刚云端为您深度分析完的个股、板块及多空资金核心底座提取出来：</p>
+                    <pre><code>{assets_string}</code></pre>
                 </div>
             </div>
         </body>
         </html>"""
-        with open("docs/index.html", "w", encoding="utf-8") as f: f.write(html_content)
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
+        print("【成功】数据穿透层已成功替换加载动画首页！")
         '
-        fi
 
     - name: Commit & Push Static Board to Repo
       run: |
@@ -113,8 +122,8 @@ jobs:
         
         git add docs/
         if git diff --cached --quiet; then
-          echo "没有新生成的数据变更"
+          echo "今日行情无新数据变动，跳过推送。"
         else
-          git commit -m "chore: 📈 注入模型参数并全量强制刷新静态看板 [$(date +'%Y-%m-%d %H:%M:%S')]"
+          git commit -m "chore: 📈 自动执行美股/A股复盘并解构静态数据流 [$(date +'%Y-%m-%d %H:%M:%S')]"
           git push origin main
         fi
